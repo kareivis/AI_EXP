@@ -46,6 +46,12 @@ class LibraryApp(tk.Tk):
         ttk.Button(ai_controls, text="Use Key", command=self.set_api_key).pack(side=tk.LEFT)
         ttk.Button(ai_controls, text="Auto Tag + Move", command=self.auto_tag_and_move).pack(side=tk.LEFT, padx=5)
 
+        # Progress UI (created on demand)
+        self.progress_win = None
+        self.progress_var = tk.IntVar(value=0)
+        self.progress_total = 0
+        self.progress_label_var = tk.StringVar(value="")
+
     def browse_folder(self):
         folder = filedialog.askdirectory()
         if folder:
@@ -94,12 +100,14 @@ class LibraryApp(tk.Tk):
 
     def _move_files_to_tag(self, tag: str, file_paths: list[str], *, silent: bool = False):
         dest_dir = os.path.join(self.current_folder, tag)
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-        except OSError as e:
-            if not silent:
-                messagebox.showerror("Folder Error", f"Could not create tag folder:\n{e}")
-            return 0, 0, [("<create-folder>", str(e))]
+        # Use existing folder if present; otherwise create it
+        if not os.path.isdir(dest_dir):
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+            except OSError as e:
+                if not silent:
+                    messagebox.showerror("Folder Error", f"Could not create tag folder:\n{e}")
+                return 0, 0, [("<create-folder>", str(e))]
 
         moved = 0
         skipped = 0
@@ -129,6 +137,47 @@ class LibraryApp(tk.Tk):
                 detail = "\n".join(f"- {p}: {err}" for p, err in errors[:10])
                 messagebox.showwarning("Some files failed", f"First errors:\n{detail}")
         return moved, skipped, errors
+
+    # ---------- Progress helpers ----------
+    def _open_progress(self, total: int, title: str = "Processing"):
+        if self.progress_win is not None:
+            try:
+                self.progress_win.destroy()
+            except Exception:
+                pass
+            self.progress_win = None
+        self.progress_total = max(0, int(total))
+        self.progress_var.set(0)
+        self.progress_label_var.set(f"Processed 0 / {self.progress_total} | Remaining {self.progress_total}")
+
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.geometry("420x120")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+        win.protocol("WM_DELETE_WINDOW", lambda: None)  # disable close during processing
+
+        ttk.Label(win, textvariable=self.progress_label_var).pack(padx=12, pady=(12, 6), anchor=tk.W)
+        bar = ttk.Progressbar(win, orient=tk.HORIZONTAL, length=380, mode="determinate", maximum=self.progress_total, variable=self.progress_var)
+        bar.pack(padx=12, pady=(0, 10))
+        self.progress_win = win
+        self.update_idletasks()
+
+    def _update_progress(self, processed: int):
+        self.progress_var.set(processed)
+        remaining = max(0, self.progress_total - processed)
+        self.progress_label_var.set(f"Processed {processed} / {self.progress_total} | Remaining {remaining}")
+        self.update_idletasks()
+
+    def _close_progress(self):
+        if self.progress_win is not None:
+            try:
+                self.progress_win.grab_release()
+                self.progress_win.destroy()
+            except Exception:
+                pass
+            self.progress_win = None
 
     def set_api_key(self):
         key = self.api_key_entry.get().strip()
@@ -207,35 +256,37 @@ class LibraryApp(tk.Tk):
             return
         file_paths = [self.tree.item(i, "values")[1] for i in items]
 
-        # First pass: classify and group by tag (no UI prompts)
-        tag_to_files: dict[str, list[str]] = {}
-        classify_errors = []
+        # Sequentially classify and move each file with progress updates
+        self._open_progress(len(file_paths), title="Auto-tagging and Moving")
+        processed_count = 0
+        categorized = 0
+        skipped_total = 0
+        total_errors = []
+
         for path in file_paths:
             try:
                 text = self._extract_text(path)
                 if not text.strip():
                     raise RuntimeError("No readable text found")
                 tag = self._ai_tag_for_text(text) or "Uncategorized"
-                tag_to_files.setdefault(tag, []).append(path)
+                # Move this single file silently and accumulate results
+                moved, skipped, errs = self._move_files_to_tag(tag, [path], silent=True)
+                categorized += moved
+                skipped_total += skipped
+                total_errors.extend(errs)
             except Exception as e:
-                classify_errors.append((path, str(e)))
+                total_errors.append((path, str(e)))
+            finally:
+                processed_count += 1
+                self._update_progress(processed_count)
 
-        # Second pass: move per tag, silently; aggregate results
-        total_moved = 0
-        total_skipped = 0
-        move_errors = []
-        for tag, paths in tag_to_files.items():
-            moved, skipped, errs = self._move_files_to_tag(tag, paths, silent=True)
-            total_moved += moved
-            total_skipped += skipped
-            move_errors.extend(errs)
+        self._close_progress()
 
         # Refresh view once and show a single summary
         self.scan_folder(self.current_folder)
-        total_errors = classify_errors + move_errors
         msg_parts = [
-            f"Categorized: {total_moved}",
-            f"Skipped: {total_skipped}",
+            f"Categorized: {categorized}",
+            f"Skipped: {skipped_total}",
         ]
         if total_errors:
             msg_parts.append(f"Errors: {len(total_errors)}")
