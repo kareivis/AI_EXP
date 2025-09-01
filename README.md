@@ -7,6 +7,7 @@ A Python application to sort and manage your personal library of documents (PDF,
 - Categorize and tag files
 - Search and filter documents
 - User-friendly interface
+ - Create tag-named folders and move files accordingly
 
 ## Requirements
 - Python 3.9+
@@ -18,6 +19,13 @@ A Python application to sort and manage your personal library of documents (PDF,
    pip install -r requirements.txt
 2. Run the application:
    python src/main.py
+
+## Tag-Based Folder Organization
+- Select a base folder using "Browse Folder".
+- Enter a tag in the "Tag" field.
+- Select one or more files in the list.
+- Click "Move to Tag Folder" to create a folder named after the tag under the selected base folder and move the files into it.
+- Invalid characters for Windows folder names are removed automatically from the tag.
 
 ---
 
