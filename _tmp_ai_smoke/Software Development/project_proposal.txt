@@ -1,0 +1,1 @@
+Project proposal: Implement a web-based task tracker using React and Node.js with PostgreSQL.
