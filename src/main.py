@@ -92,13 +92,14 @@ class LibraryApp(tk.Tk):
             return
         self._move_files_to_tag(tag, [self.tree.item(i, "values")[1] for i in selected])
 
-    def _move_files_to_tag(self, tag: str, file_paths: list[str]):
+    def _move_files_to_tag(self, tag: str, file_paths: list[str], *, silent: bool = False):
         dest_dir = os.path.join(self.current_folder, tag)
         try:
             os.makedirs(dest_dir, exist_ok=True)
         except OSError as e:
-            messagebox.showerror("Folder Error", f"Could not create tag folder:\n{e}")
-            return
+            if not silent:
+                messagebox.showerror("Folder Error", f"Could not create tag folder:\n{e}")
+            return 0, 0, [("<create-folder>", str(e))]
 
         moved = 0
         skipped = 0
@@ -118,14 +119,16 @@ class LibraryApp(tk.Tk):
             except Exception as e:
                 errors.append((src_path, str(e)))
 
-        self.scan_folder(self.current_folder)
-        msg_parts = [f"Moved: {moved}", f"Skipped: {skipped}"]
-        if errors:
-            msg_parts.append(f"Errors: {len(errors)}")
-        messagebox.showinfo("Move Complete", " | ".join(msg_parts))
-        if errors:
-            detail = "\n".join(f"- {p}: {err}" for p, err in errors[:10])
-            messagebox.showwarning("Some files failed", f"First errors:\n{detail}")
+        if not silent:
+            self.scan_folder(self.current_folder)
+            msg_parts = [f"Moved: {moved}", f"Skipped: {skipped}"]
+            if errors:
+                msg_parts.append(f"Errors: {len(errors)}")
+            messagebox.showinfo("Move Complete", " | ".join(msg_parts))
+            if errors:
+                detail = "\n".join(f"- {p}: {err}" for p, err in errors[:10])
+                messagebox.showwarning("Some files failed", f"First errors:\n{detail}")
+        return moved, skipped, errors
 
     def set_api_key(self):
         key = self.api_key_entry.get().strip()
@@ -204,28 +207,41 @@ class LibraryApp(tk.Tk):
             return
         file_paths = [self.tree.item(i, "values")[1] for i in items]
 
-        tagged = 0
-        errors = []
+        # First pass: classify and group by tag (no UI prompts)
+        tag_to_files: dict[str, list[str]] = {}
+        classify_errors = []
         for path in file_paths:
             try:
                 text = self._extract_text(path)
                 if not text.strip():
                     raise RuntimeError("No readable text found")
-                tag = self._ai_tag_for_text(text)
-                if not tag:
-                    tag = "Uncategorized"
-                self._move_files_to_tag(tag, [path])
-                tagged += 1
+                tag = self._ai_tag_for_text(text) or "Uncategorized"
+                tag_to_files.setdefault(tag, []).append(path)
             except Exception as e:
-                errors.append((path, str(e)))
+                classify_errors.append((path, str(e)))
 
-        # Final summary (view already refreshed by _move_files_to_tag)
-        msg = f"Auto-tagged and moved: {tagged}"
-        if errors:
-            msg += f" | Errors: {len(errors)}"
-        messagebox.showinfo("Auto Tag Complete", msg)
-        if errors:
-            detail = "\n".join(f"- {os.path.basename(p)}: {err}" for p, err in errors[:10])
+        # Second pass: move per tag, silently; aggregate results
+        total_moved = 0
+        total_skipped = 0
+        move_errors = []
+        for tag, paths in tag_to_files.items():
+            moved, skipped, errs = self._move_files_to_tag(tag, paths, silent=True)
+            total_moved += moved
+            total_skipped += skipped
+            move_errors.extend(errs)
+
+        # Refresh view once and show a single summary
+        self.scan_folder(self.current_folder)
+        total_errors = classify_errors + move_errors
+        msg_parts = [
+            f"Categorized: {total_moved}",
+            f"Skipped: {total_skipped}",
+        ]
+        if total_errors:
+            msg_parts.append(f"Errors: {len(total_errors)}")
+        messagebox.showinfo("Auto Tag Complete", " | ".join(msg_parts))
+        if total_errors:
+            detail = "\n".join(f"- {os.path.basename(p)}: {err}" for p, err in total_errors[:10])
             messagebox.showwarning("Some files failed", f"First errors:\n{detail}")
 
 if __name__ == "__main__":
